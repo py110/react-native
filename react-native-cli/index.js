@@ -39,7 +39,9 @@ var fs = require('fs');
 var path = require('path');
 var exec = require('child_process').exec;
 var spawn = require('child_process').spawn;
+var chalk = require('chalk');
 var prompt = require('prompt');
+var semver = require('semver');
 
 var CLI_MODULE_PATH = function() {
   return path.resolve(
@@ -47,6 +49,15 @@ var CLI_MODULE_PATH = function() {
     'node_modules',
     'react-native',
     'cli.js'
+  );
+};
+
+var REACT_NATIVE_PACKAGE_JSON_PATH = function() {
+  return path.resolve(
+    process.cwd(),
+    'node_modules',
+    'react-native',
+    'package.json'
   );
 };
 
@@ -72,11 +83,16 @@ if (cli) {
   switch (args[0]) {
   case 'init':
     if (args[1]) {
-      var verbose = process.argv.indexOf('--verbose') >= 0;
-      init(args[1], verbose);
+      var logLevel = '';
+      if (process.argv.indexOf('--verbose') >= 0) {
+        logLevel = 'verbose';
+      } else if (process.argv.indexOf('--debug') >= 0) {
+        logLevel = 'debug';
+      }
+      init(args[1], logLevel);
     } else {
       console.error(
-        'Usage: react-native init <ProjectName> [--verbose]'
+        'Usage: react-native init <ProjectName> [--debug|--verbose]'
       );
       process.exit(1);
     }
@@ -112,22 +128,22 @@ function validatePackageName(name) {
   }
 }
 
-function init(name, verbose) {
+function init(name, logLevel) {
   validatePackageName(name);
 
   if (fs.existsSync(name)) {
-    createAfterConfirmation(name, verbose);
+    createAfterConfirmation(name, logLevel);
   } else {
-    createProject(name, verbose);
+    createProject(name, logLevel);
   }
 }
 
-function createAfterConfirmation(name, verbose) {
+function createAfterConfirmation(name, logLevel) {
   prompt.start();
 
   var property = {
     name: 'yesno',
-    message: 'Directory ' + name + ' already exist. Continue?',
+    message: 'Directory ' + name + ' already exists. Continue?',
     validator: /y[es]*|n[o]?/,
     warning: 'Must respond yes or no',
     default: 'no'
@@ -135,7 +151,7 @@ function createAfterConfirmation(name, verbose) {
 
   prompt.get(property, function (err, result) {
     if (result.yesno[0] === 'y') {
-      createProject(name, verbose);
+      createProject(name, logLevel);
     } else {
       console.log('Project initialization canceled');
       process.exit();
@@ -143,7 +159,7 @@ function createAfterConfirmation(name, verbose) {
   });
 }
 
-function createProject(name, verbose) {
+function createProject(name, logLevel) {
   var root = path.resolve(name);
   var projectName = path.basename(root);
 
@@ -161,7 +177,7 @@ function createProject(name, verbose) {
     version: '0.0.1',
     private: true,
     scripts: {
-      start: 'node_modules/react-native/packager/packager.sh'
+      start: 'node node_modules/react-native/local-cli/cli.js start'
     }
   };
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify(packageJson));
@@ -169,44 +185,57 @@ function createProject(name, verbose) {
 
   console.log('Installing react-native package from npm...');
 
-  if (verbose) {
-    runVerbose(root, projectName);
-  } else {
-    run(root, projectName);
+  run(root, projectName, logLevel);
+}
+
+function run(root, projectName, logLevel) {
+  var args = ['install', '--save'];
+  if (logLevel === 'verbose') {
+    args.push('--verbose');
   }
-}
-
-function run(root, projectName) {
-  exec('npm install --save react-native', function(e, stdout, stderr) {
-    if (e) {
-      console.log(stdout);
-      console.error(stderr);
-      console.error('`npm install --save react-native` failed');
-      process.exit(1);
-    }
-
-    var cli = require(CLI_MODULE_PATH());
-    cli.init(root, projectName);
-  });
-}
-
-function runVerbose(root, projectName) {
-  var proc = spawn('npm', ['install', '--verbose', '--save', 'react-native'], {stdio: 'inherit'});
+  args.push('react-native');
+  var spawnArgs = {};
+  if (logLevel === 'debug' || logLevel === 'verbose') {
+    spawnArgs = {stdio: 'inherit'};
+  }
+  var proc = spawn('npm', args, spawnArgs);
   proc.on('close', function (code) {
     if (code !== 0) {
       console.error('`npm install --save react-native` failed');
       return;
     }
 
+    checkNodeVersion();
+
     cli = require(CLI_MODULE_PATH());
     cli.init(root, projectName);
   });
 }
 
+function checkNodeVersion() {
+  var packageJson = require(REACT_NATIVE_PACKAGE_JSON_PATH());
+  if (!packageJson.engines || !packageJson.engines.node) {
+    return;
+  }
+  if (!semver.satisfies(process.version, packageJson.engines.node)) {
+    console.error(chalk.red(
+        'You are currently running Node %s but React Native requires %s. ' +
+        'Please use a supported version of Node.\n' +
+        'See https://facebook.github.io/react-native/docs/getting-started.html'
+      ),
+      process.version,
+      packageJson.engines.node);
+  }
+}
+
 function checkForVersionArgument() {
   if (process.argv.indexOf('-v') >= 0 || process.argv.indexOf('--version') >= 0) {
-    var pjson = require('./package.json');
-    console.log(pjson.version);
+    console.log('react-native-cli: ' + require('./package.json').version);
+    try {
+      console.log('react-native: ' + require(REACT_NATIVE_PACKAGE_JSON_PATH()).version);
+    } catch (e) {
+      console.log('react-native: n/a - not inside a React Native project directory')
+    }
     process.exit();
   }
 }
